@@ -111,7 +111,6 @@ namespace RimCalendar
             // ✅ Get the current season, month, year, and day
             string currentSeason = GetCurrentSeason();
             string currentMonth = GetCurrentMonth();
-            (int tensDigit, int onesDigit) = GetCurrentYearLastTwoDigits();
             int currentDay = GenDate.DayOfSeason(Find.TickManager.TicksAbs, Find.WorldGrid.LongLatOf(Find.CurrentMap.Tile).x);
 
             #region ONCE PER SEASON
@@ -133,13 +132,12 @@ namespace RimCalendar
 
             #region ONCE PER MONTH
             // ============================
-            if (currentMonth != lastMonth || lastYear != $"{tensDigit}{onesDigit}")
+            if (currentMonth != lastMonth)
             {
                 // Update calendar & season text
                 currentCalendarImage = GetSeasonCalendarImage(currentSeason);
 
                 lastMonth = currentMonth;
-                lastYear = $"{tensDigit}{onesDigit}";
             }
             #endregion
 
@@ -148,86 +146,8 @@ namespace RimCalendar
             if (currentDay != lastDayChecked)
             {
                 lastDayChecked = currentDay; // ✅ Store the last processed day
-
-                // ✅ Update birthdays
-                birthdayPawns.Clear();
-                foreach (Pawn pawn in PawnsFinder.AllMaps_FreeColonists)
-                {
-                    if (pawn.ageTracker == null) continue;
-
-                    int birthDayOfYear = pawn.ageTracker.BirthDayOfYear;
-                    Quadrum birthQuadrum = (Quadrum)(birthDayOfYear / 15);
-                    int birthDay = (birthDayOfYear % 15) + 1;
-                    Quadrum currentQuadrum = GenDate.Quadrum(Find.TickManager.TicksAbs, Find.WorldGrid.LongLatOf(Find.CurrentMap.Tile).x);
-
-                    if (birthQuadrum == currentQuadrum)
-                    {
-                        if (!birthdayPawns.ContainsKey(birthDay))
-                            birthdayPawns[birthDay] = new List<Pawn>();
-
-                        birthdayPawns[birthDay].Add(pawn);
-                    }
-                }
-
-                // ✅ Find active and available quests happening this month
+                UpdateBirthdays();
                 UpdateEvents();
-                /*Events.Clear();
-                foreach (Quest quest in Find.QuestManager.QuestsListForReading)
-                {
-                    if (quest == null) continue;
-
-                    int eventTicks = -1;
-
-                    // ✅ If the quest is ongoing, find exact event time (shuttle, delay, etc.)
-                    if (quest.State == QuestState.Ongoing)
-                    {
-                        foreach (QuestPart part in quest.PartsListForReading)
-                        {
-                            if (part is QuestPart_Delay delayPart)
-                            {
-                                eventTicks = Find.TickManager.TicksAbs + delayPart.TicksLeft;
-                            }
-                        }
-                    }
-                    // ✅ If the quest is available but not accepted, track when it expires
-                    else if (quest.State == QuestState.NotYetAccepted && quest.ticksUntilAcceptanceExpiry > 0)
-                    {
-                        eventTicks = Find.TickManager.TicksAbs + quest.ticksUntilAcceptanceExpiry; // ✅ Adjusted
-                    }
-
-                    // ✅ Ensure we have a valid event time
-                    if (eventTicks == -1 || eventTicks <= Find.TickManager.TicksAbs)
-                        continue;
-
-                    // ✅ Convert to correct day & quadrum
-                    Quadrum eventQuadrum = GenDate.Quadrum(
-                        eventTicks,
-                        Find.WorldGrid.LongLatOf(Find.CurrentMap.Tile).x
-                    );
-
-                    int eventDay = GenDate.DayOfSeason(
-                        eventTicks,
-                        Find.WorldGrid.LongLatOf(Find.CurrentMap.Tile).x
-                    ) + 1; // Convert to 1-based day
-
-                    Quadrum currentQuadrum = GenDate.Quadrum(
-                        Find.TickManager.TicksAbs,
-                        Find.WorldGrid.LongLatOf(Find.CurrentMap.Tile).x
-                    );
-
-                    // ✅ Only track events happening in this quadrum
-                    if (eventQuadrum == currentQuadrum)
-                    {
-                        if (!Events.ContainsKey(eventDay))
-                            Events[eventDay] = new List<Quest>();
-
-                        string questType = quest.State == QuestState.NotYetAccepted ? "📜 Available Quest" : "🚀 Active Quest";
-                        Log.Message($"RIMCALENDAR: {questType} '{quest.name}' expires on {eventQuadrum} Day {eventDay}");
-                        Events[eventDay].Add(quest);
-                    }
-                }*/
-
-
             }
 
 
@@ -313,12 +233,6 @@ namespace RimCalendar
             Quadrum quadrum = GenDate.Quadrum(Find.TickManager.TicksAbs, Find.WorldGrid.LongLatOf(Find.CurrentMap.Tile).x);
             return quadrum.ToString();
         }
-        private static (int, int) GetCurrentYearLastTwoDigits()
-        {
-            int fullYear = GenDate.Year(Find.TickManager.TicksAbs, 0f);
-            int lastTwo = fullYear % 100; // ✅ Get last two digits
-            return (lastTwo / 10, lastTwo % 10); // ✅ Split into (tens, ones)
-        }
         private static string GetCurrentSeason()
         {
             Season season = GenDate.Season(Find.TickManager.TicksAbs, Find.WorldGrid.LongLatOf(Find.CurrentMap.Tile));
@@ -358,22 +272,7 @@ namespace RimCalendar
 
 
 
-        private static string GetEventToolTipDesc(string questDescription)
-        {
-            if (string.IsNullOrEmpty(questDescription))
-            {
-                return "Quest Expires: "; // 🚨 Prevents a crash
-            }
-
-            string lowerDescription = questDescription.ToLower(); // ✅ Prevents case sensitivity issues
-
-            if (lowerDescription.Contains("refugee")) return "Refugees Depart: ";
-            if (lowerDescription.Contains("shuttle")) return "Shuttle Arrives: ";
-            if (lowerDescription.Contains("you've detected")) return "Event Expires: ";
-            if (lowerDescription.Contains("raid ")) return "Raid Arrives: ";
-
-            return "Quest Expires: "; // 🚨 Prevents crashes for unknown descriptions
-        }
+        
 
 
 
@@ -391,28 +290,43 @@ namespace RimCalendar
                 default: return calendarSpringImage; // ✅ Default case
             }
         }
-        private static Texture2D GetEventImage(Quest quest)
+        private static (Texture2D, string) GetEventInfo(Quest quest)
         {
             if (quest == null)
             {
-                return questExpiredImage; // 🚨 Prevents a crash
+                return (questExpiredImage, "Quest Expires: "); // 🚨 Prevents crashes
             }
 
-            if (quest.description.RawText == null)
+            // ✅ Check if quest is not yet accepted
+            if (quest.State == QuestState.NotYetAccepted)
             {
-                return questExpiredImage; // 🚨 Prevents a crash
+                return (questExpiredImage, "Quest Expires: ");
             }
 
-            string description = quest.description.RawText.ToLower(); // ✅ Prevents case sensitivity issues
+            // ✅ Loop through all QuestParts and determine event type
+            foreach (QuestPart part in quest.PartsListForReading)
+            {
+                if (part is QuestPart_RandomRaid)
+                    return (raidImage, "Raid Arrives: "); // 🚨 Incoming Raid
 
-            if (quest.State == QuestState.NotYetAccepted) return questExpiredImage;
-            if (description.Contains("refugee")) return refugeeImage;
-            if (description.Contains("shuttle")) return shuttleImage;
-            if (description.Contains("you've detected")) return radioImage;
-            if (description.Contains("raid ")) return raidImage;
+                if (part is QuestPart_ShuttleDelay || part is QuestPart_ShuttleLeaveDelay)
+                    return (shuttleImage, "Shuttle Arrives: "); // 🚀 Shuttle Event
 
-            return questExpiredImage; // 🚨 Prevents crashes for unknown events
+                if (part is QuestPart_AddQuestRefugeeDelayedReward)
+                    return (refugeeImage, "Refugees Depart: "); // 🏠 Refugee Event
+
+                if (part is QuestPart_SendShuttleAway)
+                    return (shuttleImage, "Shuttle Departs: "); // 🛫 Shuttle Leaving
+
+                if (part is QuestPart_Delay && quest.State == QuestState.Ongoing)
+                    return (radioImage, "Event Expires: "); // 📻 Timed Event (e.g., detected loot camp)
+            }
+
+            // 🚨 Default Fallback
+            return (questExpiredImage, "Quest Expires: ");
         }
+
+
 
 
         //Misc 
@@ -465,40 +379,55 @@ namespace RimCalendar
 
                 int eventTicks = -1;
                 bool isRaidEvent = false;
+                bool isShuttleEvent = false;
+                bool isRefugeeEvent = false;
 
-                // ✅ If the quest is ongoing, determine the exact event time (shuttles, raids, etc.)
+                // ✅ If the quest is ongoing, determine the exact event time
                 if (quest.State == QuestState.Ongoing)
                 {
                     foreach (QuestPart part in quest.PartsListForReading)
                     {
-                        // ✅ Detect normal delayed events (e.g., shuttles, timed objectives)
+                        // ✅ Detect generic delayed events (e.g., timed objectives, arrivals, departures)
                         if (part is QuestPart_Delay delayPart)
                         {
                             eventTicks = Find.TickManager.TicksAbs + delayPart.TicksLeft;
                         }
 
-                        // ✅ Detect raid events (e.g., "Fighting for Profit")
+                        // ✅ Detect raids (e.g., "Fighting for Profit")
                         if (part is QuestPart_RandomRaid)
                         {
-                            QuestPart_Delay linkedRaidDelay = quest.PartsListForReading
-                                .OfType<QuestPart_Delay>()
-                                .FirstOrDefault();
+                            eventTicks = Find.TickManager.TicksAbs +
+                                         quest.PartsListForReading.OfType<QuestPart_Delay>()
+                                             .FirstOrDefault()?.TicksLeft ?? 0;
+                            isRaidEvent = true;
+                        }
 
-                            if (linkedRaidDelay != null)
-                            {
-                                eventTicks = Find.TickManager.TicksAbs + linkedRaidDelay.TicksLeft;
-                                isRaidEvent = true;
-                            }
+                        // ✅ Detect shuttle arrivals or departures
+                        if (part is QuestPart_ShuttleDelay || part is QuestPart_ShuttleLeaveDelay || part is QuestPart_SendShuttleAway)
+                        {
+                            eventTicks = Find.TickManager.TicksAbs +
+                                         quest.PartsListForReading.OfType<QuestPart_Delay>()
+                                             .FirstOrDefault()?.TicksLeft ?? 0;
+                            isShuttleEvent = true;
+                        }
+
+                        // ✅ Detect refugee-related events
+                        if (part is QuestPart_AddQuestRefugeeDelayedReward)
+                        {
+                            eventTicks = Find.TickManager.TicksAbs +
+                                         quest.PartsListForReading.OfType<QuestPart_Delay>()
+                                             .FirstOrDefault()?.TicksLeft ?? 0;
+                            isRefugeeEvent = true;
                         }
                     }
                 }
-                // ✅ If the quest is available but not yet accepted, track when it expires
+                // ✅ If the quest is not yet accepted, track its expiration time
                 else if (quest.State == QuestState.NotYetAccepted && quest.ticksUntilAcceptanceExpiry > 0)
                 {
                     eventTicks = Find.TickManager.TicksAbs + quest.ticksUntilAcceptanceExpiry;
                 }
 
-                // ✅ Ensure we have a valid event time
+                // ✅ Ensure a valid event time exists
                 if (eventTicks == -1 || eventTicks <= Find.TickManager.TicksAbs)
                     continue;
 
@@ -513,9 +442,12 @@ namespace RimCalendar
                     if (!Events.ContainsKey(eventDay))
                         Events[eventDay] = new List<Quest>();
 
-                    string questType = quest.State == QuestState.NotYetAccepted
-                        ? "📜 Available Quest"
-                        : (isRaidEvent ? "⚔️ Raid Event" : "🚀 Active Quest");
+                    // ✅ Categorizing quest types
+                    string questType = quest.State == QuestState.NotYetAccepted ? "Available Quest"
+                                    : isRaidEvent ? "Raid Event"
+                                    : isShuttleEvent ? "Shuttle Event"
+                                    : isRefugeeEvent ? "Refugee Event"
+                                    : "Active Quest";
 
                     Log.Message($"RIMCALENDAR: {questType} '{quest.name}' occurs on {eventQuadrum} Day {eventDay}");
 
@@ -523,6 +455,28 @@ namespace RimCalendar
                 }
             }
         }
+        public static void UpdateBirthdays()
+        {
+            birthdayPawns.Clear();
+            foreach (Pawn pawn in PawnsFinder.AllMaps_FreeColonists)
+            {
+                if (pawn.ageTracker == null) continue;
+
+                int birthDayOfYear = pawn.ageTracker.BirthDayOfYear;
+                Quadrum birthQuadrum = (Quadrum)(birthDayOfYear / 15);
+                int birthDay = (birthDayOfYear % 15) + 1;
+                Quadrum currentQuadrum = GenDate.Quadrum(Find.TickManager.TicksAbs, Find.WorldGrid.LongLatOf(Find.CurrentMap.Tile).x);
+
+                if (birthQuadrum == currentQuadrum)
+                {
+                    if (!birthdayPawns.ContainsKey(birthDay))
+                        birthdayPawns[birthDay] = new List<Pawn>();
+
+                    birthdayPawns[birthDay].Add(pawn);
+                }
+            }
+        }
+
         public static void RegisterPawnDeath(Pawn pawn)
         {
             if (pawn == null || pawn.Faction != Faction.OfPlayer) return; // Ignore non-colonists
@@ -658,41 +612,41 @@ namespace RimCalendar
                 float eventSize = 20f;
 
                 Rect eventRect = new Rect(eventOffsetX, eventOffsetY, eventSize, eventSize);
-                Widgets.DrawTextureFitted(eventRect, GetEventImage(Events[i][0]), 1.0f); // ✅ Draw the event icon (refugeeImage)
 
-                // ✅ Get the list of quests for that day
+                // ✅ Get the first quest on this day (for icon purposes)
                 List<Quest> questsOnThisDay = Events[i];
+                if (questsOnThisDay.Count == 0) continue;
 
-                if (questsOnThisDay.Count > 0)
+                // ✅ Use the first quest's event info (since we can't fit multiple icons)
+                (Texture2D eventImage, string eventText) = GetEventInfo(questsOnThisDay[0]);
+
+                // ✅ Draw event icon
+                Widgets.DrawTextureFitted(eventRect, eventImage, 1.0f);
+
+                // ✅ Construct tooltip with all quest names
+                string questTooltip = $"{eventText}{string.Join(", ", questsOnThisDay.Select(q => q.name))}";
+                TooltipHandler.TipRegion(eventRect, questTooltip);
+
+                // ✅ Clicking opens quest selection menu if multiple quests exist
+                if (Widgets.ButtonInvisible(eventRect))
                 {
-                    // ✅ Create tooltip with all quest names
-
-                    string questTooltip = GetEventToolTipDesc(string.Join("\n", questsOnThisDay.Select(q => q.description.RawText)))
-                        + string.Join(", ", questsOnThisDay.Select(q => q.name));
-
-                    //string questTooltip = "Expires: " + string.Join(", ", questsOnThisDay.Select(q => q.name));
-                    TooltipHandler.TipRegion(eventRect, questTooltip);
-
-                    // ✅ Clicking opens a quest selection menu if multiple quests exist
-                    if (Widgets.ButtonInvisible(eventRect))
+                    if (questsOnThisDay.Count == 1)
                     {
-                        if (questsOnThisDay.Count == 1)
+                        OpenQuestWindow(questsOnThisDay[0]); // ✅ Open the quest window if only 1 quest
+                    }
+                    else
+                    {
+                        List<FloatMenuOption> options = new List<FloatMenuOption>();
+                        foreach (Quest quest in questsOnThisDay)
                         {
-                            OpenQuestWindow(questsOnThisDay[0]); // ✅ Open the quest window if only 1 quest
+                            options.Add(new FloatMenuOption(quest.name, () => OpenQuestWindow(quest)));
                         }
-                        else
-                        {
-                            List<FloatMenuOption> options = new List<FloatMenuOption>();
-                            foreach (Quest quest in questsOnThisDay)
-                            {
-                                options.Add(new FloatMenuOption(quest.name, () => OpenQuestWindow(quest)));
-                            }
-                            Find.WindowStack.Add(new FloatMenu(options)); // ✅ Show menu if multiple quests exist
-                        }
+                        Find.WindowStack.Add(new FloatMenu(options)); // ✅ Show menu if multiple quests exist
                     }
                 }
             }
         }
+
         private static void DrawDeathAnniversaries(float panelX, float curBaseY, int currentDay)
         {
             if (currentDay > 15) return;
@@ -743,18 +697,27 @@ namespace RimCalendar
     }
 
     [HarmonyPatch(typeof(QuestManager), "Add")]
-    public static class Patch_QuestAvailable
+    public static class Patch_QuestAdded
     {
         [HarmonyPostfix]
-        public static void OnQuestAdded(Quest __result)
+        public static void OnQuestAdded(QuestManager __instance)
         {
             Log.Message("Inside OnQuestAdded");
-            if (__result != null && __result.State == QuestState.NotYetAccepted)
+
+            // ✅ Get the last added quest (ensure we reference the latest one)
+            Quest newQuest = __instance.QuestsListForReading.LastOrDefault();
+
+            if (newQuest != null)
             {
-                RimCalendarUI.UpdateEvents(); // ✅ Update the calendar immediately
+                // ✅ Log the new quest details for debugging
+                Log.Message($"[RimCalendar] New quest added: {newQuest.name} | State: {newQuest.State}");
+
+                // ✅ Update RimCalendar events whenever ANY quest is added, regardless of its initial state
+                RimCalendarUI.UpdateEvents();
             }
         }
     }
+
 
     [HarmonyPatch(typeof(Pawn), "Kill")]
     public static class Patch_Pawn_Kill
