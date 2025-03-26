@@ -6,14 +6,16 @@ using HarmonyLib;
 using System.Collections.Generic;
 using System.Linq;
 using RimWorld.Planet;
+using System.Reflection;
 
 namespace RimCalendar
 {
-    [StaticConstructorOnStartup]
     public class RimCalendarUI : GameComponent
     {
 
-        private static Vector2[] xPositions = new Vector2[]
+        public static RimCalendarUI Instance;
+
+        private Vector2[] xPositions = new Vector2[]
         {
             new Vector2(3f, 53f), //day 1
             new Vector2(28f, 53f), //day 2
@@ -31,83 +33,94 @@ namespace RimCalendar
             new Vector2(78f, 101f),  //day 14
             new Vector2(103f, 101f)  //day 15
         };
-        private static Texture2D xImage;
-        private static Texture2D blueXImage;
-        private static Texture2D redXImage;
+        private Texture2D xImage;
+        private Texture2D blueXImage;
+        private Texture2D redXImage;
 
-        private static Texture2D calendarSummerImage;
-        private static Texture2D calendarFallImage;
-        private static Texture2D calendarWinterImage;
-        private static Texture2D calendarSpringImage;
-        private static Texture2D currentCalendarImage;
-        private static string lastSeason = "";
-
-      
-        private static string lastMonth = "";
-
+        private Texture2D calendarSummerImage;
+        private Texture2D calendarFallImage;
+        private Texture2D calendarWinterImage;
+        private Texture2D calendarSpringImage;
+        private Texture2D currentCalendarImage;
+        private string lastSeason = "";      
+        private string lastMonth = "";
         
-        private static string lastYear = "";
-        private static Dictionary<int, Texture2D> seasonXTextures = new Dictionary<int, Texture2D>(); // Stores X marks per season
-        private static int lastDayChecked = -1; // Tracks the last processed game day
+        private string lastYear = "";
+        private Dictionary<int, Texture2D> seasonXTextures = new Dictionary<int, Texture2D>(); // Stores X marks per season
+        private int lastDayChecked = -1; // Tracks the last processed game day
 
-        private static Texture2D birthdayCakeImage;
-        private static Dictionary<int, List<Pawn>> birthdayPawns = new Dictionary<int, List<Pawn>>(); // Stores pawns with birthdays for each day
-        private static Dictionary<int, List<Quest>> Events = new Dictionary<int, List<Quest>>(); // Stores events
-        private static Dictionary<int, List<Pawn>> DeathAnniversaries = new Dictionary<int, List<Pawn>>();
+        private Texture2D birthdayCakeImage;
+        private Dictionary<int, List<Pawn>> birthdayPawns = new Dictionary<int, List<Pawn>>(); // Stores pawns with birthdays for each day
+        private Dictionary<int, List<Quest>> Events = new Dictionary<int, List<Quest>>(); // Stores events
+        private Dictionary<int, List<Pawn>> deathAnniversaries = new Dictionary<int, List<Pawn>>();
 
 
-        private static Texture2D drumImage;
-        private static Texture2D refugeeImage;
-        private static Texture2D shuttleImage;
-        private static Texture2D questExpiredImage;
-        private static Texture2D gravestoneImage;
-        private static Texture2D raidImage;
-        private static Texture2D radioImage;
+        private Texture2D drumImage;
+        private Texture2D refugeeImage;
+        private Texture2D shuttleImage;
+        private Texture2D questExpiredImage;
+        private Texture2D gravestoneImage;
+        private Texture2D raidImage;
+        private Texture2D radioImage;
 
+        private bool texturesLoaded = false;
 
         private static Harmony harmony;
+        private static bool RimCalendarPatched = false;
+        private bool mapLoaded = false;
 
-        public RimCalendarUI(Game game) { }
-        static RimCalendarUI()
+        public RimCalendarUI(Game game) : base()
         {
-            harmony = new Harmony("com.rimcalendar.patch");
+            if (!RimCalendarPatched)
+            {
+                harmony = new Harmony("yaboie88.rimcalendar");
 
-            //Load Mod Textures
-            #region LoadImages
-            xImage = ContentFinder<Texture2D>.Get("X", false);
-            blueXImage = ContentFinder<Texture2D>.Get("BlueX", false);
-            redXImage = ContentFinder<Texture2D>.Get("RedX", false);
+                harmony.Patch(
+                    original: AccessTools.Method(typeof(GlobalControlsUtility), "DoTimespeedControls"),
+                    postfix: new HarmonyMethod(typeof(RimCalendarUI), nameof(InjectCalendarWrapper))
+                );
 
-            calendarSummerImage = ContentFinder<Texture2D>.Get("SummerCalendar", false);
-            calendarFallImage = ContentFinder<Texture2D>.Get("FallCalendar", false);
-            calendarWinterImage = ContentFinder<Texture2D>.Get("WinterCalendar", false);
-            calendarSpringImage = ContentFinder<Texture2D>.Get("SpringCalendar", false);
+                harmony.Patch(
+                    original: AccessTools.Method(typeof(GlobalControlsUtility), "DoDate"),
+                    prefix: new HarmonyMethod(typeof(RimCalendarUI), nameof(HideDefaultDateUI_Wrapper))
+                );
 
-            birthdayCakeImage = ContentFinder<Texture2D>.Get("Cake", false);
-            refugeeImage = ContentFinder<Texture2D>.Get("Tent", false);
-            drumImage = ContentFinder<Texture2D>.Get("Drum", false);
-            shuttleImage = ContentFinder<Texture2D>.Get("Shuttle", false);
-            questExpiredImage = ContentFinder<Texture2D>.Get("QuestExpired", false);
-            gravestoneImage = ContentFinder<Texture2D>.Get("Gravestone", false);
-            raidImage = ContentFinder<Texture2D>.Get("Raid", false);
-            radioImage = ContentFinder<Texture2D>.Get("Radio", false);
-            #endregion 
+                harmony.PatchAll();
 
+                RimCalendarPatched = true;
+            }
 
-            //Patch the Calendar Image into the right UI bar
-            harmony.Patch(
-                original: AccessTools.Method(typeof(GlobalControlsUtility), "DoTimespeedControls"),
-                postfix: new HarmonyMethod(typeof(RimCalendarUI), nameof(InjectCalendarIntoUI))
-            );
-            harmony.PatchAll();
+            Instance = this;
 
-            HideGameDateTime();
         }
 
+        public override void FinalizeInit()
+        {
+            LongEventHandler.QueueLongEvent(() =>
+            {
+                RefreshDeathAnniversaryCache();
+            }, "RimCalendar_DelayedDeathAnniversary", doAsynchronously: false, null);
+        }
+
+        public override void GameComponentUpdate()
+        {
+            LoadTexturesIfNeeded();
+
+            if (!mapLoaded && Current.Game != null && Find.CurrentMap != null && Find.CurrentMap.mapPawns != null)
+            {
+                RefreshDeathAnniversaryCache();
+                mapLoaded = true;
+            }
+        }
 
         //Main FUNCTIONS
-        public static void InjectCalendarIntoUI(ref float curBaseY)
+        public static void InjectCalendarWrapper(ref float curBaseY)
         {
+            Instance.InjectCalendarIntoUI(ref curBaseY);
+        }
+        public void InjectCalendarIntoUI(ref float curBaseY)
+        {
+            LoadTexturesIfNeeded();
             // ✅ Get the current season, month, year, and day
             string currentSeason = GetCurrentSeason();
             string currentMonth = GetCurrentMonth();
@@ -148,6 +161,7 @@ namespace RimCalendar
                 lastDayChecked = currentDay; // ✅ Store the last processed day
                 UpdateBirthdays();
                 UpdateEvents();
+                RefreshDeathAnniversaryCache();
             }
 
 
@@ -179,17 +193,21 @@ namespace RimCalendar
 
             // ✅ 5. Draw the current in-game hour
             DrawGameHour(panelX, curBaseY, imageSize);
+
+            // ✅ 6. Draw the Day
+            DrawDay(panelX, curBaseY, imageSize );  
+
             #endregion
 
             #region ✅ DRAW SPECIAL ICONS (EVERY FRAME)
-            // ✅ 6. Place Gravestone Icons
+            // ✅ 6. Draw Quest Events (e.g., "Desperate Nomads")
+            DrawQuestEvents(panelX, curBaseY, currentDay);
+
+            // ✅ 7. Place Gravestone Icons
             DrawDeathAnniversaries(panelX, curBaseY, currentDay);
 
-            // ✅ 7. Place birthday cake icons
+            // ✅ 8. Place birthday cake icons
             DrawBirthdayCakes(panelX, curBaseY, currentDay);
-
-            // ✅ 8. Draw Quest Events (e.g., "Desperate Nomads")
-            DrawQuestEvents(panelX, curBaseY, currentDay);
 
             // ✅ 9. Place X marks for passed days
             DrawXMarks(panelX, curBaseY, currentDay);
@@ -198,11 +216,80 @@ namespace RimCalendar
 
             curBaseY -= imageSize * 0.40f;
         }
+        private void LoadTexturesIfNeeded()
+        {
+            if (texturesLoaded) return;
+            texturesLoaded = true;
+
+            xImage = ContentFinder<Texture2D>.Get("X", false);
+            blueXImage = ContentFinder<Texture2D>.Get("BlueX", false);
+            redXImage = ContentFinder<Texture2D>.Get("RedX", false);
+
+            calendarSummerImage = ContentFinder<Texture2D>.Get("SummerCalendar", false);
+            calendarFallImage = ContentFinder<Texture2D>.Get("FallCalendar", false);
+            calendarWinterImage = ContentFinder<Texture2D>.Get("WinterCalendar", false);
+            calendarSpringImage = ContentFinder<Texture2D>.Get("SpringCalendar", false);
+
+            birthdayCakeImage = ContentFinder<Texture2D>.Get("Cake", false);
+            refugeeImage = ContentFinder<Texture2D>.Get("Tent", false);
+            drumImage = ContentFinder<Texture2D>.Get("Drum", false);
+            shuttleImage = ContentFinder<Texture2D>.Get("Shuttle", false);
+            questExpiredImage = ContentFinder<Texture2D>.Get("QuestExpired", false);
+            gravestoneImage = ContentFinder<Texture2D>.Get("Gravestone", false);
+            raidImage = ContentFinder<Texture2D>.Get("Raid", false);
+            radioImage = ContentFinder<Texture2D>.Get("Radio", false);
+        }
+        private Dictionary<int, List<Pawn>> GetDynamicDeathAnniversaries()
+        {
+            var anniversaries = new Dictionary<int, List<Pawn>>();
+            Map map = Find.CurrentMap;
+            if (map == null) return anniversaries;
+
+            int currentTicksAbs = Find.TickManager.TicksAbs;
+            float currentLongitude = Find.WorldGrid.LongLatOf(map.Tile).x;
+            Quadrum currentQuadrum = GenDate.Quadrum(currentTicksAbs, currentLongitude);
+
+            // Grab all visible corpses
+            IEnumerable<Corpse> allCorpses = map.listerThings.AllThings.OfType<Corpse>();
+
+            // Append buried corpses from graves
+            foreach (var grave in map.listerThings.ThingsOfDef(ThingDefOf.Grave).OfType<Building_Grave>())
+            {
+                if (grave.Corpse != null)
+                    allCorpses = allCorpses.Append(grave.Corpse);
+            }
+
+            foreach (Corpse corpse in allCorpses)
+            {
+                Pawn pawn = corpse.InnerPawn;
+                if (pawn == null || !pawn.IsColonist) continue;
+
+                int deathTicks = GetTimeOfDeath(corpse);
+                if (deathTicks < 0) continue;
+
+                int tile = corpse.Tile >= 0 ? corpse.Tile : map.Tile;
+                float corpseLongitude = Find.WorldGrid.LongLatOf(tile).x;
+
+                Quadrum deathQuadrum = GenDate.Quadrum(deathTicks, corpseLongitude);
+                int deathDay = GenDate.DayOfSeason(deathTicks, corpseLongitude) + 1;
+
+                if (deathQuadrum != currentQuadrum || deathDay < 1 || deathDay > 15)
+                    continue;
+
+                if (!anniversaries.ContainsKey(deathDay))
+                    anniversaries[deathDay] = new List<Pawn>();
+
+                anniversaries[deathDay].Add(pawn);
+            }
+
+            return anniversaries;
+        }
+
 
 
         //HELPER FUNCTIONS
         //Getters 
-        private static Texture2D GetRandomX()
+        private Texture2D GetRandomX()
         {
             float roll = UnityEngine.Random.value; // ✅ Random float between 0.0 and 1.0
 
@@ -210,7 +297,7 @@ namespace RimCalendar
             if (roll < 0.80f) return blueXImage;   // ✅ 40% chance
             return redXImage;                      // ✅ 20% chance
         }
-        private static string GetCurrentYear()
+        private string GetCurrentYear()
         {
             // Absolute game ticks
             int absoluteTicks = Find.TickManager.TicksAbs;
@@ -227,13 +314,12 @@ namespace RimCalendar
 
             return currentYear.ToString();
         }
-
-        private static string GetCurrentMonth()
+        private string GetCurrentMonth()
         {
             Quadrum quadrum = GenDate.Quadrum(Find.TickManager.TicksAbs, Find.WorldGrid.LongLatOf(Find.CurrentMap.Tile).x);
             return quadrum.ToString();
         }
-        private static string GetCurrentSeason()
+        private string GetCurrentSeason()
         {
             Season season = GenDate.Season(Find.TickManager.TicksAbs, Find.WorldGrid.LongLatOf(Find.CurrentMap.Tile));
             string seasonText = season.ToString();
@@ -241,10 +327,7 @@ namespace RimCalendar
             else if (seasonText == "PermanentWinter") return "Winter";
             else return seasonText; // ✅ Default behavior for normal biomes
         }
-
-
-
-        private static string GetCurrentHour()
+        private string GetCurrentHour()
         {
             int absoluteTicks = Find.TickManager.TicksAbs;
 
@@ -269,17 +352,32 @@ namespace RimCalendar
 
             return formattedTime;
         }
+        private int GetTimeOfDeath(Corpse corpse)
+        {
+            var pawn = corpse.InnerPawn;
+            if (pawn == null) return -1;
 
-
-
-        
+            try
+            {
+                int timeOfDeath = Traverse.Create(corpse).Field("timeOfDeath").GetValue<int>();
+                return timeOfDeath;
+            }
+            catch (Exception ex)
+            {
+                Log.Warning($"❗ {pawn.LabelShortCap} - Failed to reflect timeOfDeath: {ex.Message}");
+                return -1;
+            }
+        }
+        public void RefreshDeathAnniversaryCache()
+        {
+            deathAnniversaries = GetDynamicDeathAnniversaries();
+        }
 
 
 
 
         //Texture
-
-        private static Texture2D GetSeasonCalendarImage(string season)
+        private Texture2D GetSeasonCalendarImage(string season)
         {
             switch (season)
             {
@@ -290,7 +388,7 @@ namespace RimCalendar
                 default: return calendarSpringImage; // ✅ Default case
             }
         }
-        private static (Texture2D, string) GetEventInfo(Quest quest)
+        private (Texture2D, string) GetEventInfo(Quest quest)
         {
             if (quest == null)
             {
@@ -326,11 +424,8 @@ namespace RimCalendar
             return (questExpiredImage, "Quest Expires: ");
         }
 
-
-
-
         //Misc 
-        private static void ShowBirthdayPawnSelectionMenu(List<Pawn> pawns)
+        private void ShowBirthdayPawnSelectionMenu(List<Pawn> pawns)
         {
             if (pawns == null || pawns.Count == 0) return;
 
@@ -352,11 +447,7 @@ namespace RimCalendar
                 Find.WindowStack.Add(new FloatMenu(options));
             }
         }
-        public static bool HideDefaultDateUI()
-        {
-            return false; // Returning false stops the original function from running
-        }
-        private static void OpenQuestWindow(Quest quest)
+        private void OpenQuestWindow(Quest quest)
         {
             if (quest == null) return;
 
@@ -369,7 +460,7 @@ namespace RimCalendar
             // ✅ Open detailed quest dialog correctly (without named arguments)
             ((MainTabWindow_Quests)Find.MainTabsRoot.OpenTab.TabWindow).Select(quest);
         }
-        public static void UpdateEvents()
+        public void UpdateEvents()
         {
             Events.Clear();
 
@@ -455,7 +546,7 @@ namespace RimCalendar
                 }
             }
         }
-        public static void UpdateBirthdays()
+        public void UpdateBirthdays()
         {
             birthdayPawns.Clear();
             foreach (Pawn pawn in PawnsFinder.AllMaps_FreeColonists)
@@ -476,24 +567,31 @@ namespace RimCalendar
                 }
             }
         }
-
-        public static void RegisterPawnDeath(Pawn pawn)
+        public static bool HideDefaultDateUI_Wrapper()
         {
-            if (pawn == null || pawn.Faction != Faction.OfPlayer) return; // Ignore non-colonists
-
-            int deathDay = GenDate.DayOfSeason(Find.TickManager.TicksAbs, Find.WorldGrid.LongLatOf(Find.CurrentMap.Tile).x);
-            Quadrum deathQuadrum = GenDate.Quadrum(Find.TickManager.TicksAbs, Find.WorldGrid.LongLatOf(Find.CurrentMap.Tile).x);
-
-            if (!DeathAnniversaries.ContainsKey(deathDay))
-                DeathAnniversaries[deathDay] = new List<Pawn>();
-
-            DeathAnniversaries[deathDay].Add(pawn); // Store pawn reference instead of just name
+            return Instance?.HideDefaultDateUI() ?? false;
         }
-        private static void JumpToGraveOrLog(List<Pawn> deadPawns)
+        public bool HideDefaultDateUI()
+        {
+            return false; // Returning false stops the original function from running
+        }
+        private void JumpToGraveOrCorpse(List<Pawn> deadPawns)
         {
             foreach (Pawn pawn in deadPawns)
             {
-                // ✅ Find the grave that contains this pawn
+                // 🔍 Try to find an unburied corpse of this pawn
+                Corpse corpse = Find.CurrentMap.listerThings.ThingsInGroup(ThingRequestGroup.Corpse)
+                    .OfType<Corpse>()
+                    .FirstOrDefault(c => c.InnerPawn == pawn && c.Spawned);
+
+                if (corpse != null)
+                {
+                    CameraJumper.TryJump(new GlobalTargetInfo(corpse.Position, Find.CurrentMap));
+                    Messages.Message($"Jumping to {pawn.LabelShortCap}'s corpse.", MessageTypeDefOf.PositiveEvent, false);
+                    return;
+                }
+
+                // 🪦 If no visible corpse, try to find the grave it's in
                 Building_Grave grave = Find.CurrentMap.listerThings.ThingsOfDef(ThingDefOf.Grave)
                     .OfType<Building_Grave>()
                     .FirstOrDefault(g => g.Corpse?.InnerPawn == pawn);
@@ -502,24 +600,17 @@ namespace RimCalendar
                 {
                     CameraJumper.TryJump(new GlobalTargetInfo(grave.Position, Find.CurrentMap));
                     Messages.Message($"Jumping to {pawn.LabelShortCap}'s grave.", MessageTypeDefOf.PositiveEvent, false);
-                    return; // ✅ Stop searching after finding the first grave
+                    return;
                 }
             }
 
-            // ❌ No grave found for any pawn
-            Messages.Message("No known graves for this pawns.", MessageTypeDefOf.RejectInput, false);
-        }
-        private static void HideGameDateTime()
-        {
-            harmony.Patch(
-                    original: AccessTools.Method(typeof(GlobalControlsUtility), "DoDate"),
-                    prefix: new HarmonyMethod(typeof(RimCalendarUI), nameof(HideDefaultDateUI))
-                );
+            // ❌ No corpse or grave found
+            Messages.Message("No known corpse or grave for this pawn.", MessageTypeDefOf.RejectInput, false);
         }
 
 
         //Draw 
-        private static void DrawGameHour(float panelX, float curBaseY, float imageSize)
+        private void DrawGameHour(float panelX, float curBaseY, float imageSize)
         {
             string hourText = GetCurrentHour(); // ✅ Use fixed game hour format
 
@@ -529,7 +620,7 @@ namespace RimCalendar
             Widgets.Label(hourRect, hourText);
             Text.Anchor = TextAnchor.UpperLeft;
         }
-        private static void DrawSeason(float panelX, float curBaseY, float imageSize)
+        private void DrawSeason(float panelX, float curBaseY, float imageSize)
         {
             string seasonText = GetCurrentSeason(); // ✅ Use fixed game hour format
 
@@ -539,7 +630,7 @@ namespace RimCalendar
             Widgets.Label(seasonRect, seasonText);
             Text.Anchor = TextAnchor.UpperLeft;
         }
-        private static void DrawMonth(float panelX, float curBaseY, float imageSize)
+        private void DrawMonth(float panelX, float curBaseY, float imageSize)
         {
             string monthText = GetCurrentMonth(); // ✅ Use fixed game hour format
 
@@ -549,7 +640,7 @@ namespace RimCalendar
             Widgets.Label(monthRect, monthText);
             Text.Anchor = TextAnchor.UpperLeft;
         }
-        private static void DrawYear(float panelX, float curBaseY, float imageSize)
+        private void DrawYear(float panelX, float curBaseY, float imageSize)
         {
             string yearText = GetCurrentYear(); // ✅ Use fixed game hour format
 
@@ -559,7 +650,7 @@ namespace RimCalendar
             Widgets.Label(yearRect, yearText);
             Text.Anchor = TextAnchor.UpperLeft;
         }
-        private static void DrawBirthdayCakes(float panelX, float curBaseY, int currentDay)
+        private void DrawBirthdayCakes(float panelX, float curBaseY, int currentDay)
         {
             if (currentDay > 15) return;
 
@@ -583,7 +674,7 @@ namespace RimCalendar
                 }
             }
         }
-        private static void DrawXMarks(float panelX, float curBaseY, int currentDay)
+        private void DrawXMarks(float panelX, float curBaseY, int currentDay)
         {
             if (currentDay > 14) return;
 
@@ -599,7 +690,7 @@ namespace RimCalendar
                 Widgets.DrawTextureFitted(xRect, seasonXTextures[i], 1.0f);
             }
         }
-        private static void DrawQuestEvents(float panelX, float curBaseY, int currentDay)
+        private void DrawQuestEvents(float panelX, float curBaseY, int currentDay)
         {
             if (currentDay > 15) return; // ✅ Don't process beyond the calendar
 
@@ -646,14 +737,16 @@ namespace RimCalendar
                 }
             }
         }
-
-        private static void DrawDeathAnniversaries(float panelX, float curBaseY, int currentDay)
+        private void DrawDeathAnniversaries(float panelX, float curBaseY, int currentDay)
         {
             if (currentDay > 15) return;
 
+            var dynamicDeaths = deathAnniversaries;
+
             for (int i = 1; i <= 15; i++)
             {
-                if (!DeathAnniversaries.ContainsKey(i) || i > xPositions.Length) continue;
+                if (!dynamicDeaths.TryGetValue(i, out var pawns) || pawns.Count == 0 || i > xPositions.Length)
+                    continue;
 
                 float eventOffsetX = panelX + xPositions[i - 1].x;
                 float eventOffsetY = curBaseY + xPositions[i - 1].y;
@@ -662,37 +755,45 @@ namespace RimCalendar
                 Rect eventRect = new Rect(eventOffsetX, eventOffsetY, eventSize, eventSize);
                 Widgets.DrawTextureFitted(eventRect, gravestoneImage, 1.0f);
 
-                string tooltipText = "🪦 Death Anniversary: " + string.Join(", ", DeathAnniversaries[i].Select(p => p.LabelShortCap));
+                string tooltipText = "Death Anniversary: " + string.Join(", ", pawns.Select(p => p.LabelShortCap));
                 TooltipHandler.TipRegion(eventRect, tooltipText);
 
                 if (Widgets.ButtonInvisible(eventRect))
                 {
-                    JumpToGraveOrLog(DeathAnniversaries[i]);
+                    JumpToGraveOrCorpse(pawns);
                 }
             }
         }
-
-
-
-        //UPDATE FUNCTION
-        /*public override void GameComponentUpdate()
+        private void DrawDay(float panelX, float curBaseY, float imageSize)
         {
-            if (KeyBindingDef.Named("RimCalendar_ToggleR").JustPressed) // ✅ Detects R key
-            {
-                Log.Message("R KEY is Being pressed!");
-                HideGameDateTime();
+            // 🌍 Get the current day of the season
+            int currentDay = GenDate.DayOfSeason(Find.TickManager.TicksAbs, Find.WorldGrid.LongLatOf(Find.CurrentMap.Tile).x) + 1;
 
-            }
+            // 🧠 Determine ordinal suffix
+            string suffix;
+            int lastDigit = currentDay % 10;
+            int lastTwoDigits = currentDay % 100;
 
-            if (KeyBindingDef.Named("RimCalendar_ToggleT").JustPressed) // ✅ Detects T key
-            {
-                Log.Message("T KEY is Being pressed!");
-                harmony.Unpatch(
-                    AccessTools.Method(typeof(GlobalControlsUtility), "DoDate"),
-                    HarmonyPatchType.Prefix
-                );
-            }
-        }*/
+            if (lastTwoDigits >= 11 && lastTwoDigits <= 13)
+                suffix = "th";
+            else if (lastDigit == 1)
+                suffix = "st";
+            else if (lastDigit == 2)
+                suffix = "nd";
+            else if (lastDigit == 3)
+                suffix = "rd";
+            else
+                suffix = "th";
+
+            string dayText = $"{currentDay}{suffix}";
+
+            // 🖼️ Draw the label
+            Rect dayRect = new Rect(panelX + 15f, curBaseY, imageSize, 25f);
+            Text.Anchor = TextAnchor.MiddleLeft;
+            Text.Font = GameFont.Medium;
+            Widgets.Label(dayRect, dayText);
+            Text.Anchor = TextAnchor.UpperLeft;
+        }
 
     }
 
@@ -713,23 +814,54 @@ namespace RimCalendar
                 Log.Message($"[RimCalendar] New quest added: {newQuest.name} | State: {newQuest.State}");
 
                 // ✅ Update RimCalendar events whenever ANY quest is added, regardless of its initial state
-                RimCalendarUI.UpdateEvents();
+                RimCalendarUI.Instance?.UpdateEvents();
             }
         }
     }
 
+    [HarmonyPatch(typeof(Pawn), nameof(Pawn.SpawnSetup))]
+    public static class Patch_Pawn_SpawnSetup
+    {
+        public static void Postfix(Pawn __instance)
+        {
+            if (__instance.Faction == Faction.OfPlayer)
+            {
+                LongEventHandler.ExecuteWhenFinished(() =>
+                {
+                    RimCalendarUI.Instance?.UpdateBirthdays();
+                    RimCalendarUI.Instance?.RefreshDeathAnniversaryCache();
+                });
+            }
+        }
+    }
 
-    [HarmonyPatch(typeof(Pawn), "Kill")]
+    [HarmonyPatch(typeof(Pawn), nameof(Pawn.Kill))]
     public static class Patch_Pawn_Kill
     {
         public static void Postfix(Pawn __instance)
         {
-            Log.Message("Inside Patch_Pawn_Kill");
             if (__instance != null && __instance.Faction == Faction.OfPlayer)
             {
-                RimCalendarUI.RegisterPawnDeath(__instance);
+                RimCalendarUI.Instance?.UpdateBirthdays();
+                RimCalendarUI.Instance?.RefreshDeathAnniversaryCache();
+
             }
         }
     }
+
+    [HarmonyPatch(typeof(Corpse), nameof(Corpse.PostMake))]
+    public static class Patch_Corpse_PostMake
+    {
+        [HarmonyPostfix]
+        public static void Postfix(Corpse __instance)
+        {
+            __instance.timeOfDeath = Find.TickManager.TicksAbs;
+        }
+
+    }
+
+
+
+
 
 }

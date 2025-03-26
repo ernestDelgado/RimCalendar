@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Defs>
     <GameComponentDef>
-        <li Class="RimCalendar.RimCalendarUI" />
+		<defName>RimCalendar_GameComponent</defName>
+        <class>RimCalendar.RimCalendarUI</class>  ✅ correct for single entry
     </GameComponentDef>
 </Defs>

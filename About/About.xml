@@ -1,13 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
 <ModMetaData>
     <name>RimCalendar</name>
-    <author>EMod88</author>
+    <author>yaboie88</author>
     <description>
-        A simple RimWorld mod that displays a calendar image in the center of the screen during gameplay.
-    </description>
-    <packageId>emod88.rimcalendar</packageId>
+RimCalendar adds a beautiful, immersive seasonal calendar to your RimWorld UI.
+
+-Track quests visually before they expire  
+-See exactly how many in-game minutes remain  
+-Celebrate colonist birthdays  
+-Remember fallen colonists with death anniversaries  
+-Spot incoming raids and refugee departures  
+-Detect shuttle arrivals and timed events  
+
+Plan ahead like never before — no more surprise raids or missed quests.
+
+(Work in progress – more features coming soon!)
+</description>
+
+
+    <packageId>yaboie88.rimcalendar</packageId>
 	<supportedVersions>
 		<li>1.5</li>
-        <li>1.5</li>
     </supportedVersions>
 </ModMetaData>
